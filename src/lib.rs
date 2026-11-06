@@ -31,7 +31,9 @@ use wgc::{
 use crate::conv::map_primitive_state;
 
 pub mod conv;
+pub mod futures;
 mod interop;
+mod procs;
 pub mod logging;
 pub mod unimplemented;
 pub mod utils;
@@ -88,6 +90,8 @@ impl Drop for WGPUBindGroupLayoutImpl {
 struct BufferData {
     usage: native::WGPUBufferUsage,
     size: u64,
+    /// The `WGPUBufferMapState` of the buffer (`wgpuBufferGetMapState`).
+    map_state: Arc<std::sync::atomic::AtomicU32>,
 }
 pub struct WGPUBufferImpl {
     context: Arc<Context>,
@@ -396,7 +400,6 @@ impl Drop for WGPUTextureViewImpl {
     }
 }
 
-const NULL_FUTURE: native::WGPUFuture = native::WGPUFuture { id: 0 };
 const EMPTY_STRING: native::WGPUStringView = native::WGPUStringView {
     length: 0,
     data: std::ptr::null(),
@@ -653,7 +656,8 @@ pub unsafe extern "C" fn wgpuCreateInstance(
         Some(descriptor) => {
             // Timed WaitAny is expressed ONLY via instance limits now
             if !descriptor.requiredLimits.is_null()
-                && (*descriptor.requiredLimits).timedWaitAnyMaxCount > 0
+                && (*descriptor.requiredLimits).timedWaitAnyMaxCount
+                    > futures::TIMED_WAIT_ANY_MAX_COUNT
             {
                 panic!("Unsupported timed WaitAny features specified");
             }
@@ -677,8 +681,8 @@ pub unsafe extern "C" fn wgpuGetInstanceLimits(
 ) -> native::WGPUStatus {
     let limits = limits.expect("invalid return pointer \"limits\"");
 
-    // Timed WaitAny is expressed only via limits; unsupported => max count = 0
-    limits.timedWaitAnyMaxCount = 0;
+    // Timed WaitAny is expressed only via limits.
+    limits.timedWaitAnyMaxCount = futures::TIMED_WAIT_ANY_MAX_COUNT;
 
     native::WGPUStatus_Success
 }
@@ -899,7 +903,7 @@ pub unsafe extern "C" fn wgpuAdapterRequestDevice(
         }
     };
 
-    NULL_FUTURE
+    futures::completed()
 }
 
 #[no_mangle]
@@ -951,6 +955,8 @@ pub unsafe extern "C" fn wgpuBufferDestroy(buffer: native::WGPUBuffer) {
     };
     // Per spec, no error to report. Even calling destroy multiple times is valid.
     context.buffer_destroy(buffer_id);
+    let buffer = buffer.as_ref().expect("invalid buffer");
+    buffer.data.map_state.store(native::WGPUBufferMapState_Unmapped, atomic::Ordering::Release);
 }
 
 #[no_mangle]
@@ -1025,12 +1031,14 @@ pub unsafe extern "C" fn wgpuBufferMapAsync(
     size: usize,
     callback_info: native::WGPUBufferMapCallbackInfo,
 ) -> native::WGPUFuture {
-    let (buffer_id, context, error_sink) = {
+    let (buffer_id, context, error_sink, map_state) = {
         let buffer = buffer.as_ref().expect("invalid buffer");
-        (buffer.id, &buffer.context, &buffer.error_sink)
+        (buffer.id, &buffer.context, &buffer.error_sink, buffer.data.map_state.clone())
     };
     let callback = callback_info.callback.expect("invalid callback");
     let userdata = new_userdata!(callback_info);
+    let future = futures::begin(callback_info.mode);
+    let previous_state = map_state.swap(native::WGPUBufferMapState_Pending, atomic::Ordering::AcqRel);
 
     let operation = wgc::resource::BufferMapOperation {
         host: match mode as native::WGPUMapMode {
@@ -1052,12 +1060,25 @@ pub unsafe extern "C" fn wgpuBufferMapAsync(
                     (code, format_error(&cause))
                 }
             };
+            map_state.store(
+                if status == native::WGPUMapAsyncStatus_Success {
+                    native::WGPUBufferMapState_Mapped
+                } else {
+                    previous_state
+                },
+                atomic::Ordering::Release,
+            );
 
-            callback(
-                status,
-                str_into_string_view(&message),
-                userdata.get_1(),
-                userdata.get_2(),
+            futures::complete(
+                future,
+                Box::new(move || {
+                    callback(
+                        status,
+                        str_into_string_view(&message),
+                        userdata.get_1(),
+                        userdata.get_2(),
+                    );
+                }),
             );
         })),
     };
@@ -1071,8 +1092,7 @@ pub unsafe extern "C" fn wgpuBufferMapAsync(
         handle_error(error_sink, cause, None, "wgpuBufferMapAsync");
     };
 
-    // TODO: Properly handle futures.
-    NULL_FUTURE
+    future
 }
 
 #[no_mangle]
@@ -1085,6 +1105,14 @@ pub unsafe extern "C" fn wgpuBufferUnmap(buffer: native::WGPUBuffer) {
     if let Err(cause) = context.buffer_unmap(buffer_id) {
         handle_error(error_sink, cause, None, "wgpuBufferUnmap");
     }
+    let buffer = buffer.as_ref().expect("invalid buffer");
+    buffer.data.map_state.store(native::WGPUBufferMapState_Unmapped, atomic::Ordering::Release);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wgpuBufferGetMapState(buffer: native::WGPUBuffer) -> native::WGPUBufferMapState {
+    let buffer = buffer.as_ref().expect("invalid buffer");
+    buffer.data.map_state.load(atomic::Ordering::Acquire)
 }
 
 #[no_mangle]
@@ -1998,6 +2026,11 @@ pub unsafe extern "C" fn wgpuDeviceCreateBuffer(
         data: BufferData {
             usage: descriptor.usage,
             size: descriptor.size,
+            map_state: Arc::new(std::sync::atomic::AtomicU32::new(if desc.mapped_at_creation {
+                native::WGPUBufferMapState_Mapped
+            } else {
+                native::WGPUBufferMapState_Unmapped
+            })),
         },
     }))
 }
@@ -2751,7 +2784,7 @@ pub unsafe extern "C" fn wgpuDevicePopErrorScope(
         }
     };
 
-    NULL_FUTURE
+    futures::completed()
 }
 
 #[no_mangle]
@@ -2845,6 +2878,26 @@ pub unsafe extern "C" fn wgpuInstanceProcessEvents(instance: native::WGPUInstanc
             handle_error_fatal(cause, "wgpuInstanceProcessEvents");
         }
     }
+    futures::process_events();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wgpuInstanceWaitAny(
+    instance: native::WGPUInstance,
+    future_count: usize,
+    futures: *mut native::WGPUFutureWaitInfo,
+    timeout_ns: u64,
+) -> native::WGPUWaitStatus {
+    let instance = instance.as_ref().expect("invalid instance");
+    if future_count != 0 && futures.is_null() {
+        return native::WGPUWaitStatus_Error;
+    }
+    let waits = if future_count == 0 {
+        &mut []
+    } else {
+        std::slice::from_raw_parts_mut(futures, future_count)
+    };
+    futures::wait_any(&instance.context, waits, timeout_ns)
 }
 
 #[no_mangle]
@@ -2888,7 +2941,7 @@ pub unsafe extern "C" fn wgpuInstanceRequestAdapter(
                         callback_info.userdata1,
                         callback_info.userdata2,
                     );
-                    return NULL_FUTURE;
+                    return futures::completed();
                 }
                 backend_type => panic!("invalid backend type: 0x{backend_type:08X}"),
             },
@@ -2931,7 +2984,7 @@ pub unsafe extern "C" fn wgpuInstanceRequestAdapter(
         }
     };
 
-    NULL_FUTURE
+    futures::completed()
 }
 
 #[no_mangle]
@@ -3049,24 +3102,29 @@ pub unsafe extern "C" fn wgpuQueueOnSubmittedWorkDone(
     };
     let callback = callback_info.callback.expect("invalid callback");
     let userdata = new_userdata!(callback_info);
+    let future = futures::begin(callback_info.mode);
 
     let closure: wgc::device::queue::SubmittedWorkDoneClosure = Box::new(move || {
-        let empty_message = native::WGPUStringView {
-            data: std::ptr::null(),
-            length: 0,
-        };
-        callback(
-            native::WGPUQueueWorkDoneStatus_Success,
-            empty_message,
-            userdata.get_1(),
-            userdata.get_2(),
+        futures::complete(
+            future,
+            Box::new(move || {
+                let empty_message = native::WGPUStringView {
+                    data: std::ptr::null(),
+                    length: 0,
+                };
+                callback(
+                    native::WGPUQueueWorkDoneStatus_Success,
+                    empty_message,
+                    userdata.get_1(),
+                    userdata.get_2(),
+                );
+            }),
         );
     });
 
     context.queue_on_submitted_work_done(queue_id, closure);
 
-    // TODO: Properly handle futures.
-    NULL_FUTURE
+    future
 }
 
 #[no_mangle]

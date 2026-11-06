@@ -1,11 +1,6 @@
 use crate::native;
 
 #[no_mangle]
-pub extern "C" fn wgpuGetProcAddress(_proc_name: native::WGPUStringView) -> native::WGPUProc {
-    unimplemented!();
-}
-
-#[no_mangle]
 pub extern "C" fn wgpuBindGroupSetLabel(
     _bind_group: native::WGPUBindGroup,
     _label: native::WGPUStringView,
@@ -18,11 +13,6 @@ pub extern "C" fn wgpuBindGroupLayoutSetLabel(
     _bind_group_layout: native::WGPUBindGroupLayout,
     _label: native::WGPUStringView,
 ) {
-    unimplemented!();
-}
-
-#[no_mangle]
-pub extern "C" fn wgpuBufferGetMapState(_buffer: native::WGPUBuffer) -> native::WGPUBufferMapState {
     unimplemented!();
 }
 
@@ -220,16 +210,6 @@ pub extern "C" fn wgpuTextureViewSetLabel(
     _texture_view: native::WGPUTextureView,
     _label: native::WGPUStringView,
 ) {
-    unimplemented!();
-}
-
-#[no_mangle]
-pub extern "C" fn wgpuInstanceWaitAny(
-    _instance: native::WGPUInstance,
-    _future_count: usize,
-    _futures: *mut native::WGPUFutureWaitInfo,
-    _timeout_ns: u64,
-) -> native::WGPUWaitStatus {
     unimplemented!();
 }
 
