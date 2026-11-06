@@ -3436,12 +3436,14 @@ pub unsafe extern "C" fn wgpuRenderBundleEncoderSetBindGroup(
     let encoder = encoder.expect("invalid render bundle");
     let encoder = encoder.as_mut().unwrap();
 
+    // A count of zero may come with a null pointer, which a slice may not have.
+    let dynamic_offsets = make_slice(dynamic_offsets, dynamic_offset_count);
     bundle_ffi::wgpu_render_bundle_set_bind_group(
         encoder,
         group_index,
         bind_group_id,
-        dynamic_offsets,
-        dynamic_offset_count,
+        dynamic_offsets.as_ptr(),
+        dynamic_offsets.len(),
     );
 }
 
@@ -4676,7 +4678,9 @@ pub unsafe extern "C" fn wgpuRenderBundleEncoderSetImmediates(
     let encoder = encoder.expect("invalid render bundle");
     let encoder = encoder.as_mut().unwrap();
 
-    bundle_ffi::wgpu_render_bundle_set_immediates(encoder, offset, size, data);
+    // A size of zero may come with a null pointer, which a slice may not have.
+    let data = make_slice(data, size as usize);
+    bundle_ffi::wgpu_render_bundle_set_immediates(encoder, offset, data.len() as u32, data.as_ptr());
 }
 
 #[no_mangle]
