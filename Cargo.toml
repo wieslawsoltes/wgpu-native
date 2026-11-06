@@ -24,22 +24,22 @@ resolver = "2"
 
 [workspace.dependencies.wgc]
 package = "wgpu-core"
-version = "29.0.1"
+version = "30.0.1"
 
 [workspace.dependencies.wgt]
 package = "wgpu-types"
-version = "29.0.1"
+version = "30.0.1"
 
 [workspace.dependencies.hal]
 package = "wgpu-hal"
-version = "29.0.1"
+version = "30.0.1"
 
 [workspace.dependencies.naga]
 package = "naga"
-version = "29.0.1"
+version = "30.0.1"
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = ["wgsl", "spirv", "glsl", "dx12", "metal", "vulkan", "gles"]
@@ -133,3 +133,10 @@ bitflags = "2"
 
 [build-dependencies]
 bindgen = "0.72"
+
+# Native-object interop (src/interop.rs): wgpu-hal's Metal device, queue and texture of host
+# objects. The versions are those wgpu-hal uses.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+hal = { workspace = true, features = ["metal"] }
+objc2 = "0.6"
+objc2-metal = "0.3"

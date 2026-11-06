@@ -1953,6 +1953,7 @@ pub fn map_surface_configuration(
         width: config.width,
         height: config.height,
         present_mode: map_present_mode(config.presentMode).unwrap_or(wgt::PresentMode::Fifo),
+        color_space: wgt::SurfaceColorSpace::default(),
         alpha_mode: map_composite_alpha_mode(config.alphaMode)
             .expect("invalid alpha mode for surface configuration"),
         view_formats: make_slice(config.viewFormats, config.viewFormatCount)
@@ -2034,6 +2035,9 @@ pub fn map_shader_runtime_checks(
 ) -> wgt::ShaderRuntimeChecks {
     wgt::ShaderRuntimeChecks {
         bounds_checks: (value & native::WGPUShaderRuntimeChecks_BoundsChecks) != 0,
+        // wgpu 30 guards integer division separately; the C flags have no bit of their own, so
+        // the guard follows the bounds checks (both on in the checked default).
+        int_div_checks: (value & native::WGPUShaderRuntimeChecks_BoundsChecks) != 0,
         force_loop_bounding: (value & native::WGPUShaderRuntimeChecks_ForceLoopBounding) != 0,
         ray_query_initialization_tracking: (value
             & native::WGPUShaderRuntimeChecks_RayQueryInitializationTracking)

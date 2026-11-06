@@ -31,6 +31,7 @@ use wgc::{
 use crate::conv::map_primitive_state;
 
 pub mod conv;
+mod interop;
 pub mod logging;
 pub mod unimplemented;
 pub mod utils;
@@ -1247,8 +1248,8 @@ pub unsafe extern "C" fn wgpuCommandEncoderBeginRenderPass(
                 })
                 .collect(),
         ),
-        depth_stencil_attachment: depth_stencil_attachment.as_ref(),
-        timestamp_writes: timestamp_writes.as_ref(),
+        depth_stencil_attachment,
+        timestamp_writes,
         occlusion_query_set: descriptor.occlusionQuerySet.as_ref().map(|v| v.id),
         multiview_mask: None,
     };
@@ -2190,15 +2191,14 @@ pub unsafe extern "C" fn wgpuDeviceCreateRenderBundleEncoder(
         multiview: None,
     };
 
-    match wgc::command::RenderBundleEncoder::new(&desc, device_id) {
-        Ok(encoder) => Arc::into_raw(Arc::new(WGPURenderBundleEncoderImpl {
-            context: context.clone(),
-            encoder: Box::into_raw(Box::new(Some(Box::into_raw(Box::new(encoder))))),
-        })),
-        Err(cause) => {
-            handle_error_fatal(cause, "wgpuDeviceCreateRenderBundleEncoder");
-        }
+    let (encoder, error) = context.device_create_render_bundle_encoder(device_id, &desc);
+    if let Some(cause) = error {
+        handle_error_fatal(cause, "wgpuDeviceCreateRenderBundleEncoder");
     }
+    Arc::into_raw(Arc::new(WGPURenderBundleEncoderImpl {
+        context: context.clone(),
+        encoder: Box::into_raw(Box::new(Some(Box::into_raw(encoder)))),
+    }))
 }
 
 #[no_mangle]
@@ -2240,17 +2240,18 @@ pub unsafe extern "C" fn wgpuDeviceCreateRenderPipeline(
             buffers: Cow::Owned(
                 make_slice(descriptor.vertex.buffers, descriptor.vertex.bufferCount)
                     .iter()
-                    .map(|buffer| wgc::pipeline::VertexBufferLayout {
+                    .map(|buffer| {
+                        // An undefined step mode without attributes is an unused slot (webgpu.h);
+                        // wgpu 30 has unused vertex buffer slots.
+                        if buffer.stepMode == native::WGPUVertexStepMode_Undefined && buffer.attributeCount == 0 {
+                            return None;
+                        }
+                        Some(wgc::pipeline::VertexBufferLayout {
                         array_stride: buffer.arrayStride,
                         step_mode: match buffer.stepMode {
-                            native::WGPUVertexStepMode_Undefined if buffer.attributeCount > 0 => {
-                                wgt::VertexStepMode::Vertex
-                            }
+                            native::WGPUVertexStepMode_Undefined => wgt::VertexStepMode::Vertex,
                             native::WGPUVertexStepMode_Vertex => wgt::VertexStepMode::Vertex,
                             native::WGPUVertexStepMode_Instance => wgt::VertexStepMode::Instance,
-                            | native::WGPUVertexStepMode_Undefined => {
-                                panic!("Unused vertex buffers are currently not supported in vertex buffer layout. Instead, use a vertex buffer with no attributes and a defined vertex step mode.")
-                            }
                             _ => panic!("invalid vertex step mode for vertex buffer layout"),
                         },
                         attributes: Cow::Owned(
@@ -2264,6 +2265,7 @@ pub unsafe extern "C" fn wgpuDeviceCreateRenderPipeline(
                                 })
                                 .collect(),
                         ),
+                    })
                     })
                     .collect(),
             ),
@@ -2867,6 +2869,7 @@ pub unsafe extern "C" fn wgpuInstanceRequestAdapter(
                 },
                 force_fallback_adapter: options.forceFallbackAdapter != 0,
                 compatible_surface: options.compatibleSurface.as_ref().map(|surface| surface.id),
+                apply_limit_buckets: false,
             },
             match options.backendType {
                 native::WGPUBackendType_Undefined => wgt::Backends::all(),
@@ -2947,7 +2950,7 @@ pub unsafe extern "C" fn wgpuInstanceEnumerateAdapters(
         None => wgt::Backends::all(),
     };
 
-    let result = context.enumerate_adapters(inputs);
+    let result = context.enumerate_adapters(inputs, false);
     let count = result.len();
 
     if !adapters.is_null() {
@@ -3302,7 +3305,8 @@ pub unsafe extern "C" fn wgpuRenderBundleEncoderFinish(
         None => wgt::RenderBundleDescriptor::default(),
     };
 
-    let (render_bundle_id, error) = context.render_bundle_encoder_finish(*encoder, &desc, None);
+    let mut encoder = encoder;
+    let (render_bundle_id, error) = context.render_bundle_encoder_finish(&mut encoder, &desc, None);
     if let Some(cause) = error {
         handle_error_fatal(cause, "wgpuRenderBundleEncoderFinish");
     }
@@ -3433,8 +3437,8 @@ pub unsafe extern "C" fn wgpuRenderBundleEncoderSetVertexBuffer(
     size: u64,
 ) {
     let bundle = bundle.as_ref().expect("invalid render bundle");
-    // TODO: as per webgpu.h buffer is nullable
-    let buffer_id = buffer.as_ref().expect("invalid buffer").id;
+    // A null buffer unbinds the slot (webgpu.h).
+    let buffer_id = buffer.as_ref().map(|buffer| buffer.id);
     let encoder = bundle.encoder.as_mut().expect("invalid render bundle");
     let encoder = encoder.expect("invalid render bundle");
     let encoder = encoder.as_mut().unwrap();
@@ -3888,8 +3892,8 @@ pub unsafe extern "C" fn wgpuRenderPassEncoderSetVertexBuffer(
     size: u64,
 ) {
     let pass = pass.as_ref().expect("invalid render pass");
-    // TODO: as per webgpu.h buffer is nullable
-    let buffer_id = buffer.as_ref().expect("invalid buffer").id;
+    // A null buffer unbinds the slot (webgpu.h).
+    let buffer_id = buffer.as_ref().map(|buffer| buffer.id);
     let encoder = pass.encoder.as_mut().expect("invalid compute pass encoder");
 
     match pass.context.render_pass_set_vertex_buffer(
