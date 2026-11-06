@@ -283,6 +283,13 @@ void wgpuComputePassEncoderEndPipelineStatisticsQuery(WGPUComputePassEncoder com
 void wgpuRenderPassEncoderBeginPipelineStatisticsQuery(WGPURenderPassEncoder renderPassEncoder, WGPUQuerySet querySet, uint32_t queryIndex);
 void wgpuRenderPassEncoderEndPipelineStatisticsQuery(WGPURenderPassEncoder renderPassEncoder);
 
+// Native-object interop (macOS and iOS; wieslawsoltes/wgpu-native, branch progpu/interop).
+// A device on the host's id<MTLDevice> and id<MTLCommandQueue>, and a texture of a host
+// id<MTLTexture> of that device: a platform that presents its own frames hands its renderer the
+// texture of each frame, and the work is submitted to the platform's queue. Null on failure.
+WGPUDevice wgpuInstanceCreateDeviceFromMetal(WGPUInstance instance, void * mtlDevice, void * mtlCommandQueue, WGPUDeviceDescriptor const * descriptor);
+WGPUTexture wgpuDeviceCreateTextureFromMetal(WGPUDevice device, void * mtlTexture, WGPUTextureDescriptor const * descriptor);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

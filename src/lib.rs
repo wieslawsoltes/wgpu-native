@@ -26,6 +26,7 @@ use wgc::{
 };
 
 pub mod conv;
+mod interop;
 pub mod logging;
 pub mod unimplemented;
 pub mod utils;

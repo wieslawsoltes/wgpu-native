@@ -32,6 +32,12 @@ git = "https://github.com/gfx-rs/wgpu"
 rev = "87576b72b37c6b78b41104eb25fc31893af94092"
 version = "0.19"
 
+[workspace.dependencies.hal]
+package = "wgpu-hal"
+git = "https://github.com/gfx-rs/wgpu"
+rev = "87576b72b37c6b78b41104eb25fc31893af94092"
+version = "0.19"
+
 [workspace.dependencies.naga]
 package = "naga"
 git = "https://github.com/gfx-rs/wgpu"
@@ -39,7 +45,7 @@ rev = "87576b72b37c6b78b41104eb25fc31893af94092"
 version = "0.19"
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = ["wgsl", "spirv", "glsl", "dx12", "metal"]
@@ -138,3 +144,10 @@ smallvec = "1"
 [build-dependencies]
 bindgen = "0.69"
 cfg_aliases = "0.1"
+
+# Native-object interop (src/interop.rs): wgpu-hal's Metal device, queue and texture of host
+# objects. The versions are those wgpu-hal uses.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+hal = { workspace = true, features = ["metal"] }
+metal = "0.27"
+foreign-types = "0.5"
